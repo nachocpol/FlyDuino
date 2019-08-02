@@ -4,14 +4,15 @@
 #include <Servo.h>
 #include <Wire.h>
 
+#define PI 3.1415926536f
+
 // ------------------------------ //
 //            IMU                 //
 // ------------------------------ // 
 
 //#define IMU_DEBUG
-#define IMU_ACC_RANGE_2 2.0f 
-//#define IMU_ACC_RANGE_4 4.0f 
-//#define IMU_ACC_RANGE_8 8.0f
+#define IMU_ACC_RANGE 2      // 2, 4, 8                   (+/-g)
+#define IMU_GYRO_RANGE 2000  // 2000, 1000, 500, 250, 125 (º/s)
 #define STD_G 9.80665f  
 
 void IMUDelay(uint32_t ms)
@@ -98,11 +99,11 @@ struct IMU
 
     // Select the Output data rate, range of accelerometer sensor
     Sensor.accel_cfg.odr = BMI160_ACCEL_ODR_1600HZ;
-#if defined(IMU_ACC_RANGE_2)
+#if IMU_ACC_RANGE == 2
     Sensor.accel_cfg.range = BMI160_ACCEL_RANGE_2G;
-#elif defined(IMU_ACC_RANGE_4)
+#elif IMU_ACC_RANGE == 4
     Sensor.accel_cfg.range = BMI160_ACCEL_RANGE_4G;
-#elif defined(IMU_ACC_RANGE_8)
+#elif IMU_ACC_RANGE == 8
     Sensor.accel_cfg.range = BMI160_ACCEL_RANGE_8G;
 #else
     #error Invalid IMU_ACC_RANGE!
@@ -133,15 +134,32 @@ struct IMU
   // Returns current acceleration values in m/s^2
   void GetAcceleration(float& x, float& y,float& z)
   {
-    // Ok, so we get the values inside an int16_t this means the range
-    // of values that we get is: [-32,768, +32,767]. The range of values gets defined during setup,
-    // so after normalizing, we can scale the values to get the current G's.
+    // Normalize [-32,768, +32,767], then scale by the range.
     struct bmi160_sensor_data accel;
     bmi160_get_sensor_data(BMI160_ACCEL_SEL, &accel, NULL, &Sensor);
+
+    // Values used to tune the sensor!
+    // x offset: 606
+    // y offset: -677
+    // z offset: 133
+    accel.x -= 606;
+    accel.y += 677;
+    accel.z -= 133;
+    
     // This could be reduced to 1 mult: rcp(32767) * range * g!
-    x = ((float)accel.x / 32767.0f) * IMU_ACC_RANGE_2 * STD_G;
-    y = ((float)accel.y / 32767.0f) * IMU_ACC_RANGE_2 * STD_G;
-    z = ((float)accel.z / 32767.0f) * IMU_ACC_RANGE_2 * STD_G;
+    x = ((float)accel.x / 32767.0f) * IMU_ACC_RANGE * STD_G;
+    y = ((float)accel.y / 32767.0f) * IMU_ACC_RANGE * STD_G;
+    z = ((float)accel.z / 32767.0f) * IMU_ACC_RANGE * STD_G;
+  }
+
+  void GetAngularRate(float& x, float& y, float& z)
+  {
+    struct bmi160_sensor_data gyro;
+    bmi160_get_sensor_data(BMI160_GYRO_SEL, NULL, &gyro, &Sensor);
+
+    x = ((float)gyro.x / 32767.0f) * IMU_GYRO_RANGE;
+    y = ((float)gyro.y / 32767.0f) * IMU_GYRO_RANGE;
+    z = ((float)gyro.z / 32767.0f) * IMU_GYRO_RANGE;
   }
 
   bmi160_dev Sensor;
@@ -273,6 +291,18 @@ void loop()
 
   float ax,ay,az;
   imu.GetAcceleration(ax,ay,az);
-  Serial.println(ay);
+  //Serial.println(ay);
+
+  float pitch = -(atan2(ay, az) * 180.0f / PI);
+  float roll = atan2(ax, az) * 180.0f / PI;
+  //Serial.println(roll);
+  
+  //float wx,wy,wz;
+  //imu.GetAngularRate(wx, wy, wz);
+  //Serial.println(wx);
+
+  Serial.print(roll);
+  Serial.print("/");
+  Serial.println(pitch);
 
 }
