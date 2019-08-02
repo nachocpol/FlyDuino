@@ -12,7 +12,7 @@
 
 //#define IMU_DEBUG
 #define IMU_ACC_RANGE 2      // 2, 4, 8                   (+/-g)
-#define IMU_GYRO_RANGE 2000  // 2000, 1000, 500, 250, 125 (º/s)
+#define IMU_GYRO_RANGE 1000  // 2000, 1000, 500, 250, 125 (º/s)
 #define STD_G 9.80665f  
 
 void IMUDelay(uint32_t ms)
@@ -52,7 +52,7 @@ int8_t IMURead(uint8_t addr,uint8_t reg,uint8_t* data, uint16_t dataSize)
   Wire.beginTransmission(addr);
   for(uint8_t r = 0; r != dataSize; ++r)
   {
-    Wire.write(reg + r);  
+    Wire.write(reg + r); // This is not needed!  
   }
   Wire.endTransmission();
 
@@ -115,8 +115,20 @@ struct IMU
 
     // Select the Output data rate, range of Gyroscope sensor
     Sensor.gyro_cfg.odr = BMI160_GYRO_ODR_3200HZ;
+#if IMU_GYRO_RANGE == 2000
     Sensor.gyro_cfg.range = BMI160_GYRO_RANGE_2000_DPS;
-    Sensor.gyro_cfg.bw = BMI160_GYRO_BW_NORMAL_MODE;
+#elif IMU_GYRO_RANGE == 1000
+    Sensor.gyro_cfg.range = BMI160_GYRO_RANGE_1000_DPS;
+#elif IMU_GYRO_RANGE == 500
+    Sensor.gyro_cfg.range = BMI160_GYRO_RANGE_500_DPS;
+#elif IMU_GYRO_RANGE == 250
+    Sensor.gyro_cfg.range = BMI160_GYRO_RANGE_250_DPS;
+#elif IMU_GYRO_RANGE == 125
+    Sensor.gyro_cfg.range = BMI160_GYRO_RANGE_125_DPS;
+#else
+    #error Invalid IMU_GYRO_RANGE!
+#endif
+    Sensor.gyro_cfg.bw = BMI160_GYRO_BW_OSR4_MODE; ///mmmmm meh
 
     // Select the power mode of Gyroscope sensor
     Sensor.gyro_cfg.power = BMI160_GYRO_NORMAL_MODE; 
@@ -139,9 +151,6 @@ struct IMU
     bmi160_get_sensor_data(BMI160_ACCEL_SEL, &accel, NULL, &Sensor);
 
     // Values used to tune the sensor!
-    // x offset: 606
-    // y offset: -677
-    // z offset: 133
     accel.x -= 606;
     accel.y += 677;
     accel.z -= 133;
@@ -156,6 +165,11 @@ struct IMU
   {
     struct bmi160_sensor_data gyro;
     bmi160_get_sensor_data(BMI160_GYRO_SEL, NULL, &gyro, &Sensor);
+
+    // More tuning:
+    gyro.x += 12;
+    gyro.y -= 1;
+    gyro.z -= 20;
 
     x = ((float)gyro.x / 32767.0f) * IMU_GYRO_RANGE;
     y = ((float)gyro.y / 32767.0f) * IMU_GYRO_RANGE;
@@ -237,6 +251,16 @@ struct Motors
   Servo ESC4;
 }motors;
 
+// ------------------------------ //
+//        QUAD INFO               //
+// ------------------------------ //
+struct Quad
+{
+  float Pitch;
+  float Yaw;
+  float Roll;
+}quad;
+
 
 // ------------------------------ //
 //        CODE IMPL.              //
@@ -278,31 +302,56 @@ void setup()
   imu.Setup();
 }
 
+// Timing.
+float acumTimeSeconds = 0.0f;
+unsigned long lastMicro = 0;
+
+// Accum gyro.
+float acumGyroX = 0.0f;
+float acumGyroY = 0.0f;
+
 void loop()
 {
+  // Update delta time and acumulated time:
+  unsigned long curMicro = micros(); // This will reset after 70 minutes...
+  float deltaSeconds = (float)(curMicro - lastMicro) / 1000000.0f;
+  lastMicro = curMicro;
+  acumTimeSeconds += deltaSeconds;
+  
   // Get up to date values from the receiver:
   receiver.RetrieveValues();
 
   // Throttle value 0-100(%)
   int curThrottle = map(receiver.Duration[RC_CH1],1000,2000,0,100);
-  // Serial.print("Throttle: "); Serial.println(curThrottle);
-
   motors.ESC1.write(curThrottle * 180);
 
-  float ax,ay,az;
+  // Get current acceleration values:
+  float ax, ay, az;
   imu.GetAcceleration(ax,ay,az);
-  //Serial.println(ay);
-
-  float pitch = -(atan2(ay, az) * 180.0f / PI);
-  float roll = atan2(ax, az) * 180.0f / PI;
-  //Serial.println(roll);
   
-  //float wx,wy,wz;
-  //imu.GetAngularRate(wx, wy, wz);
-  //Serial.println(wx);
+  // Initial noisy pitch and roll computed from acceleration, this is bad, as it suffers from gimbal lock :(
+  float noisyPitch = -(atan2(ay, az) * 180.0f / PI);
+  float noisyRoll = atan2(ax, az) * 180.0f / PI;
+ 
+  // Get gyroscope data:
+  float wx, wy, wz;
+  imu.GetAngularRate(wx, wy, wz);
 
-  Serial.print(roll);
-  Serial.print("/");
-  Serial.println(pitch);
+  // Angular rate to orientation:
+  acumGyroX -= wx * deltaSeconds;
+  acumGyroY -= wy * deltaSeconds;
 
+  // Transfer angle as we have yawed.. TO-DO: understand this better
+  acumGyroX += acumGyroY * sin((wz * deltaSeconds) * PI / 180.0f);
+  acumGyroY -= acumGyroX * sin((wz * deltaSeconds) * PI / 180.0f);
+
+  // Compute the final orientation values:
+  quad.Pitch = acumGyroX * 0.96f + noisyPitch * 0.04f;
+  quad.Yaw -= wz * deltaSeconds;
+  quad.Roll = acumGyroY * 0.96f + noisyRoll * 0.04f;
+
+  //Serial.print(acumGyroY);Serial.print(",");Serial.println(noisyRoll);
+  Serial.print(quad.Pitch); Serial.print("/");
+  Serial.print(quad.Yaw); Serial.print("/");
+  Serial.println(quad.Roll);
 }
