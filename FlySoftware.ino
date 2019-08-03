@@ -11,7 +11,7 @@
 // ------------------------------ // 
 
 //#define IMU_DEBUG
-#define IMU_ACC_RANGE 2      // 2, 4, 8                   (+/-g)
+#define IMU_ACC_RANGE 4      // 2, 4, 8                   (+/-g)
 #define IMU_GYRO_RANGE 1000  // 2000, 1000, 500, 250, 125 (º/s)
 #define STD_G 9.80665f  
 
@@ -143,40 +143,111 @@ struct IMU
     return true;
   }
 
+  void GetRawAcceleration(int& x, int& y, int& z)
+  {
+    struct bmi160_sensor_data accel;
+    bmi160_get_sensor_data(BMI160_ACCEL_SEL, &accel, NULL, &Sensor);
+    x = accel.x;
+    y = accel.y;
+    z = accel.z;
+  }
+
   // Returns current acceleration values in m/s^2
   void GetAcceleration(float& x, float& y,float& z)
   {
-    // Normalize [-32,768, +32,767], then scale by the range.
-    struct bmi160_sensor_data accel;
-    bmi160_get_sensor_data(BMI160_ACCEL_SEL, &accel, NULL, &Sensor);
+    int rx, ry, rz;
+    GetRawAcceleration(rx, ry, rz);
 
     // Values used to tune the sensor!
-    accel.x -= 606;
-    accel.y += 677;
-    accel.z -= 133;
+    rx += m_calAccX;
+    ry += m_calAccY;
+    rz += m_calAccZ;
     
     // This could be reduced to 1 mult: rcp(32767) * range * g!
-    x = ((float)accel.x / 32767.0f) * IMU_ACC_RANGE * STD_G;
-    y = ((float)accel.y / 32767.0f) * IMU_ACC_RANGE * STD_G;
-    z = ((float)accel.z / 32767.0f) * IMU_ACC_RANGE * STD_G;
+    x = ((float)rx / 32767.0f) * IMU_ACC_RANGE * STD_G;
+    y = ((float)ry / 32767.0f) * IMU_ACC_RANGE * STD_G;
+    z = ((float)rz / 32767.0f) * IMU_ACC_RANGE * STD_G;
   }
 
-  void GetAngularRate(float& x, float& y, float& z)
+  void CalibrateAccelerometer()
+  {
+    // Serial.println("Calibrating accelerometer...");
+    const int calibrationSteps = 1000;
+    int acumX = 0;
+    int acumY = 0;
+    int acumZ = 0;
+    int rawX, rawY, rawZ;
+    for(int i=0; i<calibrationSteps; ++i)
+    {
+      GetRawAcceleration(rawX,rawY,rawZ);
+      acumX += rawX;
+      acumY += rawY;
+      acumZ += rawZ;
+      delay(1);
+    }
+    m_calAccX = acumX / calibrationSteps;
+    m_calAccY = acumY / calibrationSteps;
+    m_calAccZ = acumZ / calibrationSteps;
+    // Serial.print("Done!: "); Serial.print(m_calAccX);Serial.print(",");Serial.print(m_calAccY);Serial.print(",");Serial.println(m_calAccZ);
+  }
+  
+  void GetRawAngularRate(int& x,int& y, int& z)
   {
     struct bmi160_sensor_data gyro;
     bmi160_get_sensor_data(BMI160_GYRO_SEL, NULL, &gyro, &Sensor);
+    
+    x = gyro.x;
+    y = gyro.y;
+    z = gyro.z;
+  }
+  
+  void GetAngularRate(float& x, float& y, float& z)
+  {
+    int rx,ry,rz;
+    GetRawAngularRate(rx, ry, rz);
 
-    // More tuning:
-    gyro.x += 12;
-    gyro.y -= 1;
-    gyro.z -= 20;
+    // Apply calibration values:
+    rx += m_calGyroX;
+    ry += m_calGyroY;
+    rz += m_calGyroZ;
+    
+    x = ((float)rx / 32767.0f) * IMU_GYRO_RANGE;
+    y = ((float)ry / 32767.0f) * IMU_GYRO_RANGE;
+    z = ((float)rz / 32767.0f) * IMU_GYRO_RANGE;
+  }
 
-    x = ((float)gyro.x / 32767.0f) * IMU_GYRO_RANGE;
-    y = ((float)gyro.y / 32767.0f) * IMU_GYRO_RANGE;
-    z = ((float)gyro.z / 32767.0f) * IMU_GYRO_RANGE;
+  void CalibrateGyroscope()
+  {
+    // Serial.println("Calibrating gyro...");
+    const int calibrationSteps = 1000;
+    int acumX = 0;
+    int acumY = 0;
+    int acumZ = 0;
+    int rawX, rawY, rawZ;
+    for(int i=0; i<calibrationSteps; ++i)
+    {
+      GetRawAngularRate(rawX,rawY,rawZ);
+      acumX += rawX;
+      acumY += rawY;
+      acumZ += rawZ;
+      delay(1);
+    }
+    m_calGyroX = acumX / calibrationSteps;
+    m_calGyroY = acumY / calibrationSteps;
+    m_calGyroZ = acumZ / calibrationSteps;
+    // Serial.print("Done!: "); Serial.print(m_calGyroX);Serial.print(",");Serial.print(m_calGyroY);Serial.print(",");Serial.println(m_calGyroZ);
   }
 
   bmi160_dev Sensor;
+  
+private:
+  int m_calGyroX;
+  int m_calGyroY;
+  int m_calGyroZ;
+  
+  int m_calAccX;
+  int m_calAccY;
+  int m_calAccZ;
 }imu;
 
 // ------------------------------ //
@@ -300,6 +371,8 @@ void setup()
 
   // Setup the BMI160
   imu.Setup();
+  imu.CalibrateGyroscope();
+  imu.CalibrateAccelerometer();
 }
 
 // Timing.
@@ -328,10 +401,11 @@ void loop()
   // Get current acceleration values:
   float ax, ay, az;
   imu.GetAcceleration(ax,ay,az);
-  
+
   // Initial noisy pitch and roll computed from acceleration, this is bad, as it suffers from gimbal lock :(
-  float noisyPitch = -(atan2(ay, az) * 180.0f / PI);
-  float noisyRoll = atan2(ax, az) * 180.0f / PI;
+  float accMagnitude = sqrt((ax*ax) + (ay*ay) + (az*az));
+  float noisyPitch = -asin(ay / accMagnitude) * 57.296;
+  float noisyRoll = asin(ax / accMagnitude) * 57.296;
  
   // Get gyroscope data:
   float wx, wy, wz;
@@ -345,13 +419,18 @@ void loop()
   acumGyroX += acumGyroY * sin((wz * deltaSeconds) * PI / 180.0f);
   acumGyroY -= acumGyroX * sin((wz * deltaSeconds) * PI / 180.0f);
 
-  // Compute the final orientation values:
-  quad.Pitch = acumGyroX * 0.96f + noisyPitch * 0.04f;
-  quad.Yaw -= wz * deltaSeconds;
-  quad.Roll = acumGyroY * 0.96f + noisyRoll * 0.04f;
+  // Compute the final orientation values (combine gyro and acc data):
+  acumGyroX = acumGyroX * 0.98f + noisyPitch * 0.02f;
+  acumGyroY = acumGyroY * 0.98f + noisyRoll * 0.02f;
 
-  //Serial.print(acumGyroY);Serial.print(",");Serial.println(noisyRoll);
-  Serial.print(quad.Pitch); Serial.print("/");
+  // Update quad orientation:
+  quad.Pitch = acumGyroX;
+  quad.Yaw -= wz * deltaSeconds;
+  quad.Roll = acumGyroY;
+  
+#if 1
+  Serial.print(quad.Pitch ); Serial.print("/");
   Serial.print(quad.Yaw); Serial.print("/");
   Serial.println(quad.Roll);
+#endif
 }
