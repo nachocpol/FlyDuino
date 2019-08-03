@@ -128,7 +128,7 @@ struct IMU
 #else
     #error Invalid IMU_GYRO_RANGE!
 #endif
-    Sensor.gyro_cfg.bw = BMI160_GYRO_BW_OSR4_MODE; ///mmmmm meh
+    Sensor.gyro_cfg.bw = BMI160_GYRO_BW_NORMAL_MODE; ///mmmmm meh
 
     // Select the power mode of Gyroscope sensor
     Sensor.gyro_cfg.power = BMI160_GYRO_NORMAL_MODE; 
@@ -238,6 +238,39 @@ struct IMU
     // Serial.print("Done!: "); Serial.print(m_calGyroX);Serial.print(",");Serial.print(m_calGyroY);Serial.print(",");Serial.println(m_calGyroZ);
   }
 
+  void GetCurrentOrientation(float deltaSeconds, float& pitch, float& yaw, float& roll)
+  {
+    // Get current acceleration values:
+    float ax, ay, az;
+    GetAcceleration(ax,ay,az);
+
+    // Initial noisy pitch and roll computed from acceleration, this is bad, as it suffers from gimbal lock :(
+    float accMagnitude = sqrt((ax*ax) + (ay*ay) + (az*az));
+    float noisyPitch = -asin(ay / accMagnitude) * 57.296;
+    float noisyRoll = asin(ax / accMagnitude) * 57.296;
+ 
+    // Get gyroscope data:
+    float wx, wy, wz;
+    GetAngularRate(wx, wy, wz);
+
+    // Angular rate to orientation:
+    m_acumGyroX -= wx * deltaSeconds;
+    m_acumGyroY -= wy * deltaSeconds;
+
+    // Transfer angle as we have yawed.. TO-DO: understand this better
+    m_acumGyroX += m_acumGyroY * sin((wz * deltaSeconds) * PI / 180.0f);
+    m_acumGyroY -= m_acumGyroX * sin((wz * deltaSeconds) * PI / 180.0f);
+
+    // Compute the final orientation values (combine gyro and acc data):
+    m_acumGyroX = m_acumGyroX * 0.98f + noisyPitch * 0.02f;
+    m_acumGyroY = m_acumGyroY * 0.98f + noisyRoll * 0.02f;
+
+    // Copy out the values!
+    pitch = m_acumGyroX;
+    yaw -= wz * deltaSeconds;
+    roll = m_acumGyroY;
+  }
+
   bmi160_dev Sensor;
   
 private:
@@ -248,6 +281,9 @@ private:
   int m_calAccX;
   int m_calAccY;
   int m_calAccZ;
+
+  float m_acumGyroX;
+  float m_acumGyroY;
 }imu;
 
 // ------------------------------ //
@@ -255,10 +291,10 @@ private:
 // ------------------------------ // 
 #define RC_NUM_CH 4
 
-#define RC_CH1  0
-#define RC_CH2  1
+#define RC_CH1  0   // Roll
+#define RC_CH2  1   // Pitch
 #define RC_CH3  2   // Throttle
-#define RC_CH4  3
+#define RC_CH4  3   // Yaw
 
 #define RC_CH1_INPUT  A0
 #define RC_CH2_INPUT  A1
@@ -293,7 +329,7 @@ struct Receiver
   void RetrieveValues()
   {
     noInterrupts();
-    memcpy(DurationInternal, (const void *)Duration, sizeof(DurationInternal));
+    memcpy(Duration,DurationInternal, sizeof(DurationInternal));
     interrupts();
   }
   
@@ -310,10 +346,10 @@ struct Motors
   void Setup()
   {
     // Connected to digital pins
-    ESC1.attach(7,1000,2000);
-    ESC1.attach(8,1000,2000);
-    ESC1.attach(9,1000,2000);
-    ESC1.attach(10,1000,2000);
+    ESC1.attach(6,1000,2000);
+    ESC2.attach(9,1000,2000);
+    ESC3.attach(10,1000,2000);
+    ESC4.attach(11,1000,2000);
   }
   
   Servo ESC1;
@@ -360,7 +396,8 @@ void setup()
 {
   // Generic setup
   Serial.begin(9600);
-  while (!Serial) {}
+  //while (!Serial) {}
+  
   Wire.begin();
 
   // RC receiver, first we set the pins as inputs, and then we setup the interrup callbacks
@@ -379,10 +416,6 @@ void setup()
 float acumTimeSeconds = 0.0f;
 unsigned long lastMicro = 0;
 
-// Accum gyro.
-float acumGyroX = 0.0f;
-float acumGyroY = 0.0f;
-
 void loop()
 {
   // Update delta time and acumulated time:
@@ -390,46 +423,53 @@ void loop()
   float deltaSeconds = (float)(curMicro - lastMicro) / 1000000.0f;
   lastMicro = curMicro;
   acumTimeSeconds += deltaSeconds;
+
+  // Start by processing the current orientation:
+  imu.GetCurrentOrientation(deltaSeconds, quad.Pitch, quad.Yaw, quad.Roll);
+  quad.Pitch = -quad.Pitch; // Test stand is upside down.
   
   // Get up to date values from the receiver:
   receiver.RetrieveValues();
 
-  // Throttle value 0-100(%)
-  int curThrottle = map(receiver.Duration[RC_CH1],1000,2000,0,100);
-  motors.ESC1.write(curThrottle * 180);
+  // Throttle value 0-1
+  float curThrottle = (float)receiver.Duration[RC_CH3]; // [1000-2000]
+  curThrottle = curThrottle - 1000.0f;                  // [0 - 1000]
+  curThrottle /= 1000.0f;                               // [0 - 1]
+  curThrottle = constrain(curThrottle, 0.0f, 1.0f);
 
-  // Get current acceleration values:
-  float ax, ay, az;
-  imu.GetAcceleration(ax,ay,az);
-
-  // Initial noisy pitch and roll computed from acceleration, this is bad, as it suffers from gimbal lock :(
-  float accMagnitude = sqrt((ax*ax) + (ay*ay) + (az*az));
-  float noisyPitch = -asin(ay / accMagnitude) * 57.296;
-  float noisyRoll = asin(ax / accMagnitude) * 57.296;
- 
-  // Get gyroscope data:
-  float wx, wy, wz;
-  imu.GetAngularRate(wx, wy, wz);
-
-  // Angular rate to orientation:
-  acumGyroX -= wx * deltaSeconds;
-  acumGyroY -= wy * deltaSeconds;
-
-  // Transfer angle as we have yawed.. TO-DO: understand this better
-  acumGyroX += acumGyroY * sin((wz * deltaSeconds) * PI / 180.0f);
-  acumGyroY -= acumGyroX * sin((wz * deltaSeconds) * PI / 180.0f);
-
-  // Compute the final orientation values (combine gyro and acc data):
-  acumGyroX = acumGyroX * 0.98f + noisyPitch * 0.02f;
-  acumGyroY = acumGyroY * 0.98f + noisyRoll * 0.02f;
-
-  // Update quad orientation:
-  quad.Pitch = acumGyroX;
-  quad.Yaw -= wz * deltaSeconds;
-  quad.Roll = acumGyroY;
+  float throttleESC1 = curThrottle;
+  float throttleESC2 = curThrottle;
   
-#if 1
-  Serial.print(quad.Pitch ); Serial.print("/");
+  // PID!
+  if(curThrottle > 0.1f) // safe!
+  {
+    float targetPitch = 0.0f; // This is the value we want
+    float pitchError = quad.Pitch - targetPitch; // Current error.
+
+    // [P]
+    float P = pitchError * 0.0001f;
+    
+    // [I]
+    float I = 0.0f;
+    
+    // [D]
+    float D = 0.0f;
+
+    throttleESC2 -= P + I + D; // D9
+    throttleESC1 += P + I + D; // D6
+
+    // Clamp the values!
+    throttleESC1 = constrain(throttleESC1, 0.0f, 1.0f);
+    throttleESC2 = constrain(throttleESC2, 0.0f, 1.0f);
+    Serial.println(throttleESC1);
+  }
+  
+  // Send the throttle to the ESC.
+  motors.ESC1.write(throttleESC1 * 180.0f);
+  motors.ESC2.write(throttleESC2 * 180.0f);
+  
+#if 0
+  Serial.println(quad.Pitch );
   Serial.print(quad.Yaw); Serial.print("/");
   Serial.println(quad.Roll);
 #endif
