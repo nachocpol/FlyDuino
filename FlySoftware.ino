@@ -4,7 +4,7 @@
 #include <Servo.h>
 #include <Wire.h>
 
-#define PI 3.1415926536f
+#define RAD_TO_DEG ((1.0f / PI) * 180.0f)
 
 // ------------------------------ //
 //            IMU                 //
@@ -171,7 +171,7 @@ struct IMU
 
   void CalibrateAccelerometer()
   {
-    // Serial.println("Calibrating accelerometer...");
+    Serial.println("Calibrating accelerometer...");
     const int calibrationSteps = 1000;
     int acumX = 0;
     int acumY = 0;
@@ -188,7 +188,7 @@ struct IMU
     m_calAccX = acumX / calibrationSteps;
     m_calAccY = acumY / calibrationSteps;
     m_calAccZ = acumZ / calibrationSteps;
-    // Serial.print("Done!: "); Serial.print(m_calAccX);Serial.print(",");Serial.print(m_calAccY);Serial.print(",");Serial.println(m_calAccZ);
+    Serial.println("Done!");
   }
   
   void GetRawAngularRate(int& x,int& y, int& z)
@@ -218,7 +218,7 @@ struct IMU
 
   void CalibrateGyroscope()
   {
-    // Serial.println("Calibrating gyro...");
+    Serial.println("Calibrating gyro...");
     const int calibrationSteps = 1000;
     int acumX = 0;
     int acumY = 0;
@@ -235,24 +235,42 @@ struct IMU
     m_calGyroX = acumX / calibrationSteps;
     m_calGyroY = acumY / calibrationSteps;
     m_calGyroZ = acumZ / calibrationSteps;
-    // Serial.print("Done!: "); Serial.print(m_calGyroX);Serial.print(",");Serial.print(m_calGyroY);Serial.print(",");Serial.println(m_calGyroZ);
+    Serial.println("Done!");
   }
 
   void GetCurrentOrientation(float deltaSeconds, float& pitch, float& yaw, float& roll)
   {
+    bool isUpsideDown = false; // For testing
+    
     // Get current acceleration values:
     float ax, ay, az;
     GetAcceleration(ax,ay,az);
 
     // Initial noisy pitch and roll computed from acceleration, this is bad, as it suffers from gimbal lock :(
     float accMagnitude = sqrt((ax*ax) + (ay*ay) + (az*az));
-    float noisyPitch = -asin(ay / accMagnitude) * 57.296;
-    float noisyRoll = asin(ax / accMagnitude) * 57.296;
- 
+    // float noisyPitch = -asin(ay / accMagnitude) * RAD_TO_DEG;
+    // float noisyRoll = asin(ax / accMagnitude) * RAD_TO_DEG;
+    if(isUpsideDown)
+    { 
+      az = -az;  // This flips the resutls (useful is testing with the board upside down).
+    } 
+    float noisyPitch = 180.0f - (90.0f + atan2((ay / accMagnitude) , (az / accMagnitude)) * RAD_TO_DEG);
+    noisyPitch -= 90.0f; // Y is pararel to the ground!
+    float noisyRoll = 180.0f - (90.0f + atan2((az / accMagnitude) , (ax / accMagnitude)) * RAD_TO_DEG);
+    
+    noisyPitch = constrain(noisyPitch,-89.0f,89.0f);
+    noisyRoll = constrain(noisyRoll,-89.0f,89.0f);
+     
     // Get gyroscope data:
     float wx, wy, wz;
     GetAngularRate(wx, wy, wz);
 
+    if(isUpsideDown)
+    { 
+      wx = -wx;  // This flips the resutls (useful is testing with the board upside down).
+      wy = -wy;
+    }
+     
     // Angular rate to orientation:
     m_acumGyroX -= wx * deltaSeconds;
     m_acumGyroY -= wy * deltaSeconds;
@@ -267,8 +285,12 @@ struct IMU
 
     // Copy out the values!
     pitch = m_acumGyroX;
-    yaw -= wz * deltaSeconds;
-    roll = m_acumGyroY;
+    //yaw -= wz * deltaSeconds;
+    //roll = m_acumGyroY;
+
+    Serial.print(m_acumGyroX);Serial.print("/");
+    Serial.print(0.0f); Serial.print("/");
+    Serial.println(m_acumGyroY);
   }
 
   bmi160_dev Sensor;
@@ -416,6 +438,8 @@ void setup()
 float acumTimeSeconds = 0.0f;
 unsigned long lastMicro = 0;
 
+float pitchIntegral = 0.0f;
+
 void loop()
 {
   // Update delta time and acumulated time:
@@ -426,8 +450,14 @@ void loop()
 
   // Start by processing the current orientation:
   imu.GetCurrentOrientation(deltaSeconds, quad.Pitch, quad.Yaw, quad.Roll);
-  quad.Pitch = -quad.Pitch; // Test stand is upside down.
-  
+
+#if 0
+  Serial.print(quad.Pitch );Serial.print("/");
+  Serial.print(quad.Yaw); Serial.print("/");
+  Serial.println(quad.Roll);
+#endif
+
+#if 0
   // Get up to date values from the receiver:
   receiver.RetrieveValues();
 
@@ -450,27 +480,25 @@ void loop()
     float P = pitchError * 0.0001f;
     
     // [I]
+    //pitchIntegral += pitchError * deltaSeconds;
+    //float I = pitchIntegral * 0.0001f;
+    //I = constrain(I, 0.0f, 1.0f);
     float I = 0.0f;
     
     // [D]
     float D = 0.0f;
 
-    throttleESC2 -= P + I + D; // D9
-    throttleESC1 += P + I + D; // D6
+    throttleESC2 += P + I + D; // D9
+    throttleESC1 -= P + I + D; // D6
 
     // Clamp the values!
     throttleESC1 = constrain(throttleESC1, 0.0f, 1.0f);
     throttleESC2 = constrain(throttleESC2, 0.0f, 1.0f);
-    Serial.println(throttleESC1);
+    
   }
   
   // Send the throttle to the ESC.
   motors.ESC1.write(throttleESC1 * 180.0f);
   motors.ESC2.write(throttleESC2 * 180.0f);
-  
-#if 0
-  Serial.println(quad.Pitch );
-  Serial.print(quad.Yaw); Serial.print("/");
-  Serial.println(quad.Roll);
 #endif
 }
