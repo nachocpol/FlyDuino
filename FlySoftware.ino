@@ -82,6 +82,16 @@ struct IMU
 {
   bool Setup()
   {
+    m_calGyroX = 0;
+    m_calGyroY = 0;
+    m_calGyroZ = 0;
+    m_calAccX = 0;
+    m_calAccY = 0;
+    m_calAccZ = 0;
+    m_acumGyroPitch = 0.0f;
+    m_acumYaw= 0.0f;
+    m_acumGyroRoll= 0.0f;
+    
     // BMI config!
     Sensor.id = BMI160_I2C_ADDR;
     Sensor.interface = BMI160_I2C_INTF;
@@ -240,7 +250,7 @@ struct IMU
 
   void GetCurrentOrientation(float deltaSeconds, float& pitch, float& yaw, float& roll)
   {
-    bool isUpsideDown = false; // For testing
+    bool isUpsideDown = true; // For testing
     
     // Get current acceleration values:
     float ax, ay, az;
@@ -265,6 +275,11 @@ struct IMU
     float wx, wy, wz;
     GetAngularRate(wx, wy, wz);
 
+    if(wz < 15.0f && wz > -15.0f) // No magnetometer data, so just ignore small values.. not perfect tho.
+    {
+      wz = 0.0f;
+    }
+    
     if(isUpsideDown)
     { 
       wx = -wx;  // This flips the resutls (useful is testing with the board upside down).
@@ -272,25 +287,28 @@ struct IMU
     }
      
     // Angular rate to orientation:
-    m_acumGyroX -= wx * deltaSeconds;
-    m_acumGyroY -= wy * deltaSeconds;
-
+    m_acumGyroPitch -= wx * deltaSeconds;
+    m_acumGyroRoll -= wy * deltaSeconds;
+    m_acumYaw -= wz * deltaSeconds;
+    
     // Transfer angle as we have yawed.. TO-DO: understand this better
-    m_acumGyroX += m_acumGyroY * sin((wz * deltaSeconds) * PI / 180.0f);
-    m_acumGyroY -= m_acumGyroX * sin((wz * deltaSeconds) * PI / 180.0f);
+    m_acumGyroPitch += m_acumGyroRoll * sin((wz * deltaSeconds) * PI / 180.0f);
+    m_acumGyroRoll -= m_acumGyroPitch * sin((wz * deltaSeconds) * PI / 180.0f);
 
     // Compute the final orientation values (combine gyro and acc data):
-    m_acumGyroX = m_acumGyroX * 0.98f + noisyPitch * 0.02f;
-    m_acumGyroY = m_acumGyroY * 0.98f + noisyRoll * 0.02f;
+    m_acumGyroPitch = m_acumGyroPitch * 0.99f + noisyPitch * 0.01f;
+    m_acumGyroRoll = m_acumGyroRoll * 0.99f + noisyRoll * 0.01f;
 
     // Copy out the values!
-    pitch = m_acumGyroX;
-    //yaw -= wz * deltaSeconds;
-    //roll = m_acumGyroY;
+    pitch = pitch * 0.9f +  m_acumGyroPitch * 0.1f;
+    yaw = m_acumYaw;
+    roll = roll * 0.9f + m_acumGyroRoll * 0.1f;
 
-    Serial.print(m_acumGyroX);Serial.print("/");
-    Serial.print(0.0f); Serial.print("/");
-    Serial.println(m_acumGyroY);
+# if 0
+    Serial.print(pitch);Serial.print("/");
+    Serial.print(yaw); Serial.print("/");
+    Serial.println(roll);
+#endif
   }
 
   bmi160_dev Sensor;
@@ -304,8 +322,9 @@ private:
   int m_calAccY;
   int m_calAccZ;
 
-  float m_acumGyroX;
-  float m_acumGyroY;
+  float m_acumGyroPitch;
+  float m_acumYaw;
+  float m_acumGyroRoll;
 }imu;
 
 // ------------------------------ //
@@ -385,6 +404,12 @@ struct Motors
 // ------------------------------ //
 struct Quad
 {
+  Quad()
+  {
+    Pitch = 0.0f;
+    Yaw = 0.0f;
+    Roll = 0.0f;
+  }
   float Pitch;
   float Yaw;
   float Roll;
@@ -439,6 +464,7 @@ float acumTimeSeconds = 0.0f;
 unsigned long lastMicro = 0;
 
 float pitchIntegral = 0.0f;
+float previousError = 0.0f;
 
 void loop()
 {
@@ -451,13 +477,6 @@ void loop()
   // Start by processing the current orientation:
   imu.GetCurrentOrientation(deltaSeconds, quad.Pitch, quad.Yaw, quad.Roll);
 
-#if 0
-  Serial.print(quad.Pitch );Serial.print("/");
-  Serial.print(quad.Yaw); Serial.print("/");
-  Serial.println(quad.Roll);
-#endif
-
-#if 0
   // Get up to date values from the receiver:
   receiver.RetrieveValues();
 
@@ -469,36 +488,43 @@ void loop()
 
   float throttleESC1 = curThrottle;
   float throttleESC2 = curThrottle;
-  
+
+#if 1
   // PID!
-  if(curThrottle > 0.1f) // safe!
+  float targetPitch = 0.0f; // This is the value we want
+  float pitchError = quad.Pitch - targetPitch; // Current error.
+
+  // [P]
+  float Kp = 0.00001f;
+  float P = pitchError * Kp;
+  P = constrain(P, -1.0f, 1.0f);
+    
+  // [I]
+  if(curThrottle > 0.0f)
   {
-    float targetPitch = 0.0f; // This is the value we want
-    float pitchError = quad.Pitch - targetPitch; // Current error.
-
-    // [P]
-    float P = pitchError * 0.0001f;
-    
-    // [I]
-    //pitchIntegral += pitchError * deltaSeconds;
-    //float I = pitchIntegral * 0.0001f;
-    //I = constrain(I, 0.0f, 1.0f);
-    float I = 0.0f;
-    
-    // [D]
-    float D = 0.0f;
-
-    throttleESC2 += P + I + D; // D9
-    throttleESC1 -= P + I + D; // D6
-
-    // Clamp the values!
-    throttleESC1 = constrain(throttleESC1, 0.0f, 1.0f);
-    throttleESC2 = constrain(throttleESC2, 0.0f, 1.0f);
-    
+    pitchIntegral += pitchError; 
   }
+  float Ki = 0.000025f;
+  float I = pitchIntegral * Ki;
+  I = constrain(I, -1.0f, 1.0f);
   
+  // [D]
+  float Kd = 0.0001f;
+  float D = ((pitchError - previousError) / deltaSeconds) * Kd;
+  previousError = pitchError;
+  D = constrain(D, -1.0f, 1.0f);
+    
+  throttleESC2 += P + I + D; // D9
+  throttleESC1 -= P + I + D; // D6
+
+  // Clamp the values!
+  throttleESC1 = constrain(throttleESC1, 0.0f, 1.0f);
+  throttleESC2 = constrain(throttleESC2, 0.0f, 1.0f);
+#endif
+
+  Serial.print(quad.Pitch);Serial.print(", ");
+  Serial.print(throttleESC2);Serial.print(", ");Serial.println(throttleESC1);
   // Send the throttle to the ESC.
   motors.ESC1.write(throttleESC1 * 180.0f);
   motors.ESC2.write(throttleESC2 * 180.0f);
-#endif
 }
