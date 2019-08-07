@@ -12,7 +12,7 @@
 
 //#define IMU_DEBUG
 #define IMU_ACC_RANGE 4      // 2, 4, 8                   (+/-g)
-#define IMU_GYRO_RANGE 1000  // 2000, 1000, 500, 250, 125 (º/s)
+#define IMU_GYRO_RANGE 500   // 2000, 1000, 500, 250, 125 (º/s)
 #define STD_G 9.80665f  
 
 void IMUDelay(uint32_t ms)
@@ -48,12 +48,11 @@ int8_t IMURead(uint8_t addr,uint8_t reg,uint8_t* data, uint16_t dataSize)
   Serial.println(dataSize);
 #endif
 
-  // Request read from [reg, reg+dataSize]: 
+  // Request read from reg + dataSize: 
   Wire.beginTransmission(addr);
-  for(uint8_t r = 0; r != dataSize; ++r)
-  {
-    Wire.write(reg + r); // This is not needed!  
-  }
+  
+  Wire.write(reg); // This is not needed!  
+  
   Wire.endTransmission();
 
   // Retrieve data
@@ -108,7 +107,7 @@ struct IMU
     }
 
     // Select the Output data rate, range of accelerometer sensor
-    Sensor.accel_cfg.odr = BMI160_ACCEL_ODR_1600HZ;
+    Sensor.accel_cfg.odr = BMI160_ACCEL_ODR_800HZ;
 #if IMU_ACC_RANGE == 2
     Sensor.accel_cfg.range = BMI160_ACCEL_RANGE_2G;
 #elif IMU_ACC_RANGE == 4
@@ -138,7 +137,7 @@ struct IMU
 #else
     #error Invalid IMU_GYRO_RANGE!
 #endif
-    Sensor.gyro_cfg.bw = BMI160_GYRO_BW_NORMAL_MODE; ///mmmmm meh
+    Sensor.gyro_cfg.bw = BMI160_GYRO_BW_OSR4_MODE; ///mmmmm meh
 
     // Select the power mode of Gyroscope sensor
     Sensor.gyro_cfg.power = BMI160_GYRO_NORMAL_MODE; 
@@ -296,13 +295,13 @@ struct IMU
     m_acumGyroRoll -= m_acumGyroPitch * sin((wz * deltaSeconds) * PI / 180.0f);
 
     // Compute the final orientation values (combine gyro and acc data):
-    m_acumGyroPitch = m_acumGyroPitch * 0.99f + noisyPitch * 0.01f;
-    m_acumGyroRoll = m_acumGyroRoll * 0.99f + noisyRoll * 0.01f;
+    m_acumGyroPitch = m_acumGyroPitch * 0.999f + noisyPitch * 0.001f;
+    m_acumGyroRoll = m_acumGyroRoll * 0.999f + noisyRoll * 0.001f;
 
     // Copy out the values!
-    pitch = pitch * 0.9f +  m_acumGyroPitch * 0.1f;
+    pitch = pitch * 0.0f +  m_acumGyroPitch * 1.0f;
     yaw = m_acumYaw;
-    roll = roll * 0.9f + m_acumGyroRoll * 0.1f;
+    roll = roll * 0.9f + m_acumGyroRoll * 1.0f;
 
 # if 0
     Serial.print(pitch);Serial.print("/");
@@ -495,21 +494,21 @@ void loop()
   float pitchError = quad.Pitch - targetPitch; // Current error.
 
   // [P]
-  float Kp = 0.00001f;
+  float Kp = 0.0001f;
   float P = pitchError * Kp;
   P = constrain(P, -1.0f, 1.0f);
     
   // [I]
   if(curThrottle > 0.0f)
   {
-    pitchIntegral += pitchError; 
+    pitchIntegral += pitchError * deltaSeconds; 
   }
-  float Ki = 0.000025f;
+  float Ki = 0.0f;
   float I = pitchIntegral * Ki;
   I = constrain(I, -1.0f, 1.0f);
   
   // [D]
-  float Kd = 0.0001f;
+  float Kd = 0.00014f;
   float D = ((pitchError - previousError) / deltaSeconds) * Kd;
   previousError = pitchError;
   D = constrain(D, -1.0f, 1.0f);
@@ -520,10 +519,25 @@ void loop()
   // Clamp the values!
   throttleESC1 = constrain(throttleESC1, 0.0f, 1.0f);
   throttleESC2 = constrain(throttleESC2, 0.0f, 1.0f);
+  
+  //Serial.print(0.0f); 
+  //Serial.print(" ");
+  //Serial.print(pitchError);
+  //Serial.print(" ");
+  Serial.print(0.0f);
+  Serial.print(" ");
+  Serial.println(throttleESC1 * 10.0f,5);
+  //Serial.print(" ");
+  //Serial.println(throttleESC1 * 10.0f,5);
+  //Serial.print(P,5);
+  //Serial.print(" ");
+  //Serial.println(I,5);
 #endif
 
-  Serial.print(quad.Pitch);Serial.print(", ");
-  Serial.print(throttleESC2);Serial.print(", ");Serial.println(throttleESC1);
+  
+  //Serial.print(quad.Pitch);Serial.print(", ");
+  //Serial.print(throttleESC2);Serial.print(", ");Serial.println(throttleESC1);
+  
   // Send the throttle to the ESC.
   motors.ESC1.write(throttleESC1 * 180.0f);
   motors.ESC2.write(throttleESC2 * 180.0f);
