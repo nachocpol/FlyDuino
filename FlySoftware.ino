@@ -295,15 +295,15 @@ struct IMU
     m_acumGyroRoll -= m_acumGyroPitch * sin((wz * deltaSeconds) * PI / 180.0f);
 
     // Compute the final orientation values (combine gyro and acc data):
-    m_acumGyroPitch = m_acumGyroPitch * 0.999f + noisyPitch * 0.001f;
-    m_acumGyroRoll = m_acumGyroRoll * 0.999f + noisyRoll * 0.001f;
+    m_acumGyroPitch = m_acumGyroPitch * 0.996f + noisyPitch * 0.004f;
+    m_acumGyroRoll = m_acumGyroRoll * 0.996f + noisyRoll * 0.004f;
 
     // Copy out the values!
     pitch = pitch * 0.0f +  m_acumGyroPitch * 1.0f;
     yaw = m_acumYaw;
-    roll = roll * 0.9f + m_acumGyroRoll * 1.0f;
+    roll = roll * 0.0f + m_acumGyroRoll * 1.0f;
 
-# if 0
+#if 0
     Serial.print(pitch);Serial.print("/");
     Serial.print(yaw); Serial.print("/");
     Serial.println(roll);
@@ -490,28 +490,25 @@ void loop()
 
 #if 1
   // PID!
-  float targetPitch = 0.0f; // This is the value we want
+  float targetPitch = -20.0f; // This is the value we want
   float pitchError = quad.Pitch - targetPitch; // Current error.
 
   // [P]
-  float Kp = 0.0001f;
+  float Kp = 0.00035f;
   float P = pitchError * Kp;
-  P = constrain(P, -1.0f, 1.0f);
     
   // [I]
   if(curThrottle > 0.0f)
   {
     pitchIntegral += pitchError * deltaSeconds; 
   }
-  float Ki = 0.0f;
+  float Ki = 0.00005f;
   float I = pitchIntegral * Ki;
-  I = constrain(I, -1.0f, 1.0f);
   
   // [D]
-  float Kd = 0.00014f;
+  float Kd = 0.000025f;
   float D = ((pitchError - previousError) / deltaSeconds) * Kd;
   previousError = pitchError;
-  D = constrain(D, -1.0f, 1.0f);
     
   throttleESC2 += P + I + D; // D9
   throttleESC1 -= P + I + D; // D6
@@ -519,19 +516,27 @@ void loop()
   // Clamp the values!
   throttleESC1 = constrain(throttleESC1, 0.0f, 1.0f);
   throttleESC2 = constrain(throttleESC2, 0.0f, 1.0f);
-  
+
+#if 1
   //Serial.print(0.0f); 
   //Serial.print(" ");
   //Serial.print(pitchError);
   //Serial.print(" ");
-  Serial.print(0.0f);
   Serial.print(" ");
-  Serial.println(throttleESC1 * 10.0f,5);
+  Serial.print(P * 200.0f,5);
+  Serial.print(" ");
+  Serial.print(I * 200.0f,5);
+  Serial.print(" ");
+  Serial.print(D * 200.0f,5);
+  Serial.print(" ");
+  Serial.println((P + I + D) * 100,5);
   //Serial.print(" ");
   //Serial.println(throttleESC1 * 10.0f,5);
   //Serial.print(P,5);
   //Serial.print(" ");
   //Serial.println(I,5);
+#endif
+
 #endif
 
   
