@@ -10,9 +10,6 @@
 //            IMU                 //
 // ------------------------------ // 
 
-//#define IMU_DEBUG
-#define IMU_ACC_RANGE 4      // 2, 4, 8                   (+/-g)
-#define IMU_GYRO_RANGE 500   // 2000, 1000, 500, 250, 125 (º/s)
 #define STD_G 9.80665f  
 
 void IMUDelay(uint32_t ms)
@@ -21,16 +18,7 @@ void IMUDelay(uint32_t ms)
 }
 
 int8_t IMUWrite(uint8_t addr,uint8_t reg,uint8_t* data, uint16_t dataSize)
-{
-#if defined(IMU_DEBUG)
-  Serial.print("Write: ");
-  Serial.print(addr);
-  Serial.print(" ");
-  Serial.print(reg);
-  Serial.print(" ");
-  Serial.println(dataSize);
-#endif
-  
+{ 
   Wire.beginTransmission(addr);
   Wire.write(reg);
   Wire.write(data, dataSize);
@@ -39,15 +27,6 @@ int8_t IMUWrite(uint8_t addr,uint8_t reg,uint8_t* data, uint16_t dataSize)
 
 int8_t IMURead(uint8_t addr,uint8_t reg,uint8_t* data, uint16_t dataSize)
 {  
-#if defined(IMU_DEBUG)
-  Serial.print("Read: ");
-  Serial.print(addr);
-  Serial.print(" ");
-  Serial.print(reg);
-  Serial.print(" ");
-  Serial.println(dataSize);
-#endif
-
   // Request read from reg + dataSize: 
   Wire.beginTransmission(addr);
   
@@ -66,12 +45,6 @@ int8_t IMURead(uint8_t addr,uint8_t reg,uint8_t* data, uint16_t dataSize)
   // Perform some error checking:
   if(sizeReceived != dataSize)
   {
-#if defined(IMU_DEBUG)
-    Serial.print("There was a problem retrieving data from the IMU! Requested:"); 
-    Serial.print(dataSize);
-    Serial.print(", Received:");
-    Serial.println(sizeReceived);
-#endif
     return BMI160_E_COM_FAIL;
   }
   return BMI160_OK;
@@ -107,16 +80,7 @@ struct IMU
     }
 
     // Select the Output data rate, range of accelerometer sensor
-    Sensor.accel_cfg.odr = BMI160_ACCEL_ODR_800HZ;
-#if IMU_ACC_RANGE == 2
-    Sensor.accel_cfg.range = BMI160_ACCEL_RANGE_2G;
-#elif IMU_ACC_RANGE == 4
     Sensor.accel_cfg.range = BMI160_ACCEL_RANGE_4G;
-#elif IMU_ACC_RANGE == 8
-    Sensor.accel_cfg.range = BMI160_ACCEL_RANGE_8G;
-#else
-    #error Invalid IMU_ACC_RANGE!
-#endif
     Sensor.accel_cfg.bw = BMI160_ACCEL_BW_NORMAL_AVG4;
 
     // Select the power mode of accelerometer sensor
@@ -124,19 +88,7 @@ struct IMU
 
     // Select the Output data rate, range of Gyroscope sensor
     Sensor.gyro_cfg.odr = BMI160_GYRO_ODR_3200HZ;
-#if IMU_GYRO_RANGE == 2000
-    Sensor.gyro_cfg.range = BMI160_GYRO_RANGE_2000_DPS;
-#elif IMU_GYRO_RANGE == 1000
-    Sensor.gyro_cfg.range = BMI160_GYRO_RANGE_1000_DPS;
-#elif IMU_GYRO_RANGE == 500
     Sensor.gyro_cfg.range = BMI160_GYRO_RANGE_500_DPS;
-#elif IMU_GYRO_RANGE == 250
-    Sensor.gyro_cfg.range = BMI160_GYRO_RANGE_250_DPS;
-#elif IMU_GYRO_RANGE == 125
-    Sensor.gyro_cfg.range = BMI160_GYRO_RANGE_125_DPS;
-#else
-    #error Invalid IMU_GYRO_RANGE!
-#endif
     Sensor.gyro_cfg.bw = BMI160_GYRO_BW_OSR4_MODE; ///mmmmm meh
 
     // Select the power mode of Gyroscope sensor
@@ -173,9 +125,9 @@ struct IMU
     rz += m_calAccZ;
     
     // This could be reduced to 1 mult: rcp(32767) * range * g!
-    x = ((float)rx / 32767.0f) * IMU_ACC_RANGE * STD_G;
-    y = ((float)ry / 32767.0f) * IMU_ACC_RANGE * STD_G;
-    z = ((float)rz / 32767.0f) * IMU_ACC_RANGE * STD_G;
+    x = ((float)rx / 32767.0f) * 4.0f * STD_G;
+    y = ((float)ry / 32767.0f) * 4.0f * STD_G;
+    z = ((float)rz / 32767.0f) * 4.0f * STD_G;
   }
 
   void CalibrateAccelerometer()
@@ -220,9 +172,9 @@ struct IMU
     ry += m_calGyroY;
     rz += m_calGyroZ;
     
-    x = ((float)rx / 32767.0f) * IMU_GYRO_RANGE;
-    y = ((float)ry / 32767.0f) * IMU_GYRO_RANGE;
-    z = ((float)rz / 32767.0f) * IMU_GYRO_RANGE;
+    x = ((float)rx / 32767.0f) * 500.0f;
+    y = ((float)ry / 32767.0f) * 500.0f;
+    z = ((float)rz / 32767.0f) * 500.0f;
   }
 
   void CalibrateGyroscope()
@@ -493,11 +445,11 @@ void loop()
   if(rxThrottle > 30) // Add some dead band.
   {
     // PID!
-    float targetPitch = 0.0f; // This is the value we want
+    float targetPitch = -25.0f; // This is the value we want
     float pitchError = quad.Pitch - targetPitch; // Current error.
 
     // [P]
-    float Kp = 0.075f;
+    float Kp = 0.45f;
     float P = pitchError * Kp;
     
     // [I]
@@ -505,11 +457,11 @@ void loop()
     {
       pitchIntegral += pitchError * deltaSeconds; 
     }
-    float Ki = 0.125f;
+    float Ki = 0.065f;
     float I = pitchIntegral * Ki;
   
     // [D]
-    float Kd = 0.075f;
+    float Kd = 0.095f;
     float D = ((pitchError - previousError) / deltaSeconds) * Kd;
     previousError = pitchError;
 
