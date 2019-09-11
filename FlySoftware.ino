@@ -321,7 +321,7 @@ struct Receiver
   void RetrieveValues()
   {
     noInterrupts();
-    memcpy(Duration,DurationInternal, sizeof(DurationInternal));
+    memcpy(Duration, DurationInternal, sizeof(DurationInternal));
     interrupts();
   }
   
@@ -432,20 +432,50 @@ void loop()
   // Get up to date values from the receiver:
   receiver.RetrieveValues();
 
+  float rxRoll = ((float)receiver.Duration[RC_CH1] - 1500.0f) / 500.0f ; // -1 1 
+  float rxPitch = ((float)receiver.Duration[RC_CH2] - 1500.0f) / 500.0f ; // -1 1
+  float rxYaw = ((float)receiver.Duration[RC_CH4] - 1500.0f) / 500.0f ; // -1 1
+  
   // Throttle from receiver, we clamp it to 960 to give the PID some headroom:
-  float rxThrottle = constrain(
-    (float)receiver.Duration[RC_CH3] - 1000.0f, 
-    0.0f, 
-    960.0f
-    );
+  float rxThrottle = constrain((float)receiver.Duration[RC_CH3] - 1000.0f, 0.0f, 960.0f);
+  
   float throttleESC1 = rxThrottle;
   float throttleESC2 = rxThrottle;
   
 #if 1
   if(rxThrottle > 30) // Add some dead band.
   {
+
+    struct PID
+    {
+      PID(float pGain, float iGain, float dGain):
+        mPGain(pGain),
+        mIGain(iGain),
+        mDGain(dGain),
+        mPitchIntegral(0.0f),
+        mPreviousError(0.0f)
+      {
+      }
+      float Update(float error, float deltaSeconds)
+      {
+        float p = error * mPGain;
+        mPitchIntegral += error * deltaSeconds;
+        float i = mPitchIntegral * mIGain;
+        float d = ((error - previousError) / deltaSeconds) * mDGain;
+        mPreviousError = error;
+        return p + i + d;
+      }
+     private:
+      float mPGain;
+      float mIGain;
+      float mDGain;
+
+      float mPitchIntegral;
+      float mPreviousError;
+    };
+    
     // PID!
-    float targetPitch = -25.0f; // This is the value we want
+    float targetPitch = 0.0f; // This is the value we want
     float pitchError = quad.Pitch - targetPitch; // Current error.
 
     // [P]
