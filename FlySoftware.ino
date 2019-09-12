@@ -4,8 +4,6 @@
 #include <Servo.h>
 #include <Wire.h>
 
-#define RAD_TO_DEG ((1.0f / PI) * 180.0f)
-
 // ------------------------------ //
 //            IMU                 //
 // ------------------------------ // 
@@ -331,39 +329,84 @@ struct Receiver
 }receiver;
 
 // ------------------------------ //
-//        MOTORS                  //
+//        QUAD & PID              //
 // ------------------------------ //
-struct Motors
+struct PIDController
 {
+  PIDController(float pGain, float iGain, float dGain):
+    mPGain(pGain),
+    mIGain(iGain),
+    mDGain(dGain),
+    mPitchIntegral(0.0f),
+    mPreviousError(0.0f)
+  {
+  }
+  
+  float Update(float error, float deltaSeconds)
+  {
+    float p = error * mPGain;
+    mPitchIntegral += error * deltaSeconds;
+    float i = mPitchIntegral * mIGain;
+    float d = ((error - mPreviousError) / deltaSeconds) * mDGain;
+    mPreviousError = error;
+    return p + i + d;
+  }
+  
+ private:
+  float mPGain;
+  float mIGain;
+  float mDGain;
+
+  float mPitchIntegral;
+  float mPreviousError;
+};
+    
+struct Quad
+{
+  Quad():
+    PitchPID(0.45f, 0.065f, 0.095f),
+    YawPID(0.45f, 0.065f, 0.095f),    // Yaw should use other gains (no D at all!)
+    RollPID(0.45f, 0.065f, 0.095f)
+  {
+    Pitch = 0.0f;
+    Yaw = 0.0f;
+    Roll = 0.0f;
+  }
   void Setup()
   {
     // Connected to digital pins
     ESC1.attach(6,1000,2000);
     ESC2.attach(9,1000,2000);
     ESC3.attach(10,1000,2000);
-    ESC4.attach(11,1000,2000);
+    ESC4.attach(11,1000,2000);    
   }
+
+  // Input values in the 0-1000 range:
+  void SetThrottle(float tESC1, float tESC2, float tESC3, float tESC4)
+  {
+    tESC1 = constrain(tESC1, 0.0f, 1000.0f);
+    tESC2 = constrain(tESC2, 0.0f, 1000.0f);
+    tESC3 = constrain(tESC3, 0.0f, 1000.0f);
+    tESC4 = constrain(tESC4, 0.0f, 1000.0f);
+  
+    ESC1.write((tESC1 / 1000.0f) * 180.0f);
+    ESC2.write((tESC2 / 1000.0f) * 180.0f);
+    ESC3.write((tESC3 / 1000.0f) * 180.0f);
+    ESC4.write((tESC4 / 1000.0f) * 180.0f);
+  }
+  
+  float Pitch;
+  float Yaw;
+  float Roll;
+
+  PIDController PitchPID;
+  PIDController YawPID;
+  PIDController RollPID;
   
   Servo ESC1;
   Servo ESC2;
   Servo ESC3;
   Servo ESC4;
-}motors;
-
-// ------------------------------ //
-//        QUAD INFO               //
-// ------------------------------ //
-struct Quad
-{
-  Quad()
-  {
-    Pitch = 0.0f;
-    Yaw = 0.0f;
-    Roll = 0.0f;
-  }
-  float Pitch;
-  float Yaw;
-  float Roll;
 }quad;
 
 
@@ -402,8 +445,8 @@ void setup()
   // RC receiver, first we set the pins as inputs, and then we setup the interrup callbacks
   receiver.Setup();
 
-  // Setup the ESC
-  motors.Setup();
+  // Setup the quad (motors)
+  quad.Setup();
 
   // Setup the BMI160
   imu.Setup();
@@ -444,65 +487,16 @@ void loop()
   
 #if 1
   if(rxThrottle > 30) // Add some dead band.
-  {
-
-    struct PID
-    {
-      PID(float pGain, float iGain, float dGain):
-        mPGain(pGain),
-        mIGain(iGain),
-        mDGain(dGain),
-        mPitchIntegral(0.0f),
-        mPreviousError(0.0f)
-      {
-      }
-      float Update(float error, float deltaSeconds)
-      {
-        float p = error * mPGain;
-        mPitchIntegral += error * deltaSeconds;
-        float i = mPitchIntegral * mIGain;
-        float d = ((error - previousError) / deltaSeconds) * mDGain;
-        mPreviousError = error;
-        return p + i + d;
-      }
-     private:
-      float mPGain;
-      float mIGain;
-      float mDGain;
-
-      float mPitchIntegral;
-      float mPreviousError;
-    };
-    
-    // PID!
+  {    
     float targetPitch = 0.0f; // This is the value we want
     float pitchError = quad.Pitch - targetPitch; // Current error.
 
-    // [P]
-    float Kp = 0.45f;
-    float P = pitchError * Kp;
+    float pidPitch = quad.PitchPID.Update(pitchError, deltaSeconds);
     
-    // [I]
-    if(rxThrottle > 0.0f)
-    {
-      pitchIntegral += pitchError * deltaSeconds; 
-    }
-    float Ki = 0.065f;
-    float I = pitchIntegral * Ki;
-  
-    // [D]
-    float Kd = 0.095f;
-    float D = ((pitchError - previousError) / deltaSeconds) * Kd;
-    previousError = pitchError;
-
-    throttleESC2 += P + I + D; // D9
-    throttleESC1 -= P + I + D; // D6    
+    throttleESC2 += pidPitch; // D9
+    throttleESC1 -= pidPitch; // D6    
 
 #if 0
-  //Serial.print(0.0f); 
-  //Serial.print(" ");
-  //Serial.print(pitchError);
-  //Serial.print(" ");
   Serial.print(" ");
   Serial.print(P * 1000.0f,5);
   Serial.print(" ");
@@ -511,11 +505,6 @@ void loop()
   Serial.print(D * 1000.0f,5);
   Serial.print(" ");
   Serial.println((P + I + D) * 1000,5);
-  //Serial.print(" ");
-  //Serial.println(throttleESC1 * 10.0f,5);
-  //Serial.print(P,5);
-  //Serial.print(" ");
-  //Serial.println(I,5);
 #endif
 
   }
@@ -527,16 +516,8 @@ void loop()
     pitchIntegral= 0.0f; // Reset
   }
 
-  // Ensure range:
-  throttleESC1 = constrain(throttleESC1, 0.0f, 1000.0f);
-  throttleESC2 = constrain(throttleESC2, 0.0f, 1000.0f);
 #endif
 
-  
-  Serial.print(quad.Pitch);Serial.print(", ");
-  Serial.print(throttleESC2);Serial.print(", ");Serial.println(throttleESC1);
-  
   // Send the throttle to the ESC.
-  motors.ESC1.write((throttleESC1 / 1000.0f) * 180.0f);
-  motors.ESC2.write((throttleESC2 / 1000.0f) * 180.0f);
+  quad.SetThrottle(throttleESC1, throttleESC2, 0.0f, 0.0f);  
 }
