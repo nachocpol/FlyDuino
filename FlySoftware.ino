@@ -1,8 +1,9 @@
-#include <bmi160.h>
-#include <bmi160_defs.h>
 #include <EnableInterrupt.h>
 #include <Servo.h>
+#include <MPU9250.h>
 #include <Wire.h>
+
+extern TwoWire Wire;
 
 // ------------------------------ //
 //            IMU                 //
@@ -10,195 +11,44 @@
 
 #define STD_G 9.80665f  
 
-void IMUDelay(uint32_t ms)
-{
-  delay(ms);
-}
-
-int8_t IMUWrite(uint8_t addr,uint8_t reg,uint8_t* data, uint16_t dataSize)
-{ 
-  Wire.beginTransmission(addr);
-  Wire.write(reg);
-  Wire.write(data, dataSize);
-  Wire.endTransmission(); 
-}
-
-int8_t IMURead(uint8_t addr,uint8_t reg,uint8_t* data, uint16_t dataSize)
-{  
-  // Request read from reg + dataSize: 
-  Wire.beginTransmission(addr);
-  
-  Wire.write(reg); // This is not needed!  
-  
-  Wire.endTransmission();
-
-  // Retrieve data
-  uint16_t sizeReceived = 0;
-  Wire.requestFrom(addr, dataSize);
-  while(Wire.available())
-  {
-    data[sizeReceived++] = Wire.read();
-  }
-  
-  // Perform some error checking:
-  if(sizeReceived != dataSize)
-  {
-    return BMI160_E_COM_FAIL;
-  }
-  return BMI160_OK;
-}
+MPU9250 IMUSensor(Wire,104);
 
 struct IMU
 {
   bool Setup()
   {
-    m_calGyroX = 0;
-    m_calGyroY = 0;
-    m_calGyroZ = 0;
-    m_calAccX = 0;
-    m_calAccY = 0;
-    m_calAccZ = 0;
     m_acumGyroPitch = 0.0f;
     m_acumYaw= 0.0f;
     m_acumGyroRoll= 0.0f;
     
-    // BMI config!
-    Sensor.id = BMI160_I2C_ADDR;
-    Sensor.interface = BMI160_I2C_INTF;
-    Sensor.read = IMURead;
-    Sensor.write = IMUWrite;
-    Sensor.delay_ms = IMUDelay;  
-
-    int8_t res = bmi160_init(&Sensor);
-    if(res != BMI160_OK)
-    {
-      Serial.println(res);
-      Serial.println("Error while initializing the IMU");
-      return false;
-    }
-
-    // Select the Output data rate, range of accelerometer sensor
-    Sensor.accel_cfg.range = BMI160_ACCEL_RANGE_4G;
-    Sensor.accel_cfg.bw = BMI160_ACCEL_BW_NORMAL_AVG4;
-
-    // Select the power mode of accelerometer sensor
-    Sensor.accel_cfg.power = BMI160_ACCEL_NORMAL_MODE;
-
-    // Select the Output data rate, range of Gyroscope sensor
-    Sensor.gyro_cfg.odr = BMI160_GYRO_ODR_3200HZ;
-    Sensor.gyro_cfg.range = BMI160_GYRO_RANGE_500_DPS;
-    Sensor.gyro_cfg.bw = BMI160_GYRO_BW_OSR4_MODE; ///mmmmm meh
-
-    // Select the power mode of Gyroscope sensor
-    Sensor.gyro_cfg.power = BMI160_GYRO_NORMAL_MODE; 
-
-    // Set the sensor configuration
-    res = bmi160_set_sens_conf(&Sensor);
-    if(res != BMI160_OK)
-    {
-      Serial.println(res);  
-    }
+    IMUSensor.begin();
+    IMUSensor.setAccelRange(MPU9250::ACCEL_RANGE_8G);
+    IMUSensor.setGyroRange(MPU9250::GYRO_RANGE_500DPS);
         
     return true;
   }
 
-  void GetRawAcceleration(int& x, int& y, int& z)
-  {
-    struct bmi160_sensor_data accel;
-    bmi160_get_sensor_data(BMI160_ACCEL_SEL, &accel, NULL, &Sensor);
-    x = accel.x;
-    y = accel.y;
-    z = accel.z;
-  }
-
   // Returns current acceleration values in m/s^2
-  void GetAcceleration(float& x, float& y,float& z)
+  void GetAcceleration(float& x, float& y, float& z)
   {
-    int rx, ry, rz;
-    GetRawAcceleration(rx, ry, rz);
-
-    // Values used to tune the sensor!
-    rx += m_calAccX;
-    ry += m_calAccY;
-    rz += m_calAccZ;
-    
-    // This could be reduced to 1 mult: rcp(32767) * range * g!
-    x = ((float)rx / 32767.0f) * 4.0f * STD_G;
-    y = ((float)ry / 32767.0f) * 4.0f * STD_G;
-    z = ((float)rz / 32767.0f) * 4.0f * STD_G;
+    x = IMUSensor.getAccelX_mss();
+    y = IMUSensor.getAccelY_mss();
+    z = IMUSensor.getAccelZ_mss();
   }
 
-  void CalibrateAccelerometer()
+  // Returns angular rage in degrees per second:
+  void GetAngularRate(float& x,float& y, float& z)
   {
-    Serial.println("Calibrating accelerometer...");
-    const int calibrationSteps = 1000;
-    int acumX = 0;
-    int acumY = 0;
-    int acumZ = 0;
-    int rawX, rawY, rawZ;
-    for(int i=0; i<calibrationSteps; ++i)
-    {
-      GetRawAcceleration(rawX,rawY,rawZ);
-      acumX += rawX;
-      acumY += rawY;
-      acumZ += rawZ;
-      delay(1);
-    }
-    m_calAccX = acumX / calibrationSteps;
-    m_calAccY = acumY / calibrationSteps;
-    m_calAccZ = acumZ / calibrationSteps;
-    Serial.println("Done!");
+    x = IMUSensor.getGyroX_rads() * RAD_TO_DEG;
+    y = IMUSensor.getGyroY_rads() * RAD_TO_DEG;
+    z = IMUSensor.getGyroZ_rads() * RAD_TO_DEG;
   }
   
-  void GetRawAngularRate(int& x,int& y, int& z)
-  {
-    struct bmi160_sensor_data gyro;
-    bmi160_get_sensor_data(BMI160_GYRO_SEL, NULL, &gyro, &Sensor);
-    
-    x = gyro.x;
-    y = gyro.y;
-    z = gyro.z;
-  }
-  
-  void GetAngularRate(float& x, float& y, float& z)
-  {
-    int rx,ry,rz;
-    GetRawAngularRate(rx, ry, rz);
-
-    // Apply calibration values:
-    rx += m_calGyroX;
-    ry += m_calGyroY;
-    rz += m_calGyroZ;
-    
-    x = ((float)rx / 32767.0f) * 500.0f;
-    y = ((float)ry / 32767.0f) * 500.0f;
-    z = ((float)rz / 32767.0f) * 500.0f;
-  }
-
-  void CalibrateGyroscope()
-  {
-    Serial.println("Calibrating gyro...");
-    const int calibrationSteps = 1000;
-    int acumX = 0;
-    int acumY = 0;
-    int acumZ = 0;
-    int rawX, rawY, rawZ;
-    for(int i=0; i<calibrationSteps; ++i)
-    {
-      GetRawAngularRate(rawX,rawY,rawZ);
-      acumX += rawX;
-      acumY += rawY;
-      acumZ += rawZ;
-      delay(1);
-    }
-    m_calGyroX = acumX / calibrationSteps;
-    m_calGyroY = acumY / calibrationSteps;
-    m_calGyroZ = acumZ / calibrationSteps;
-    Serial.println("Done!");
-  }
-
   void GetCurrentOrientation(float deltaSeconds, float& pitch, float& yaw, float& roll)
   {
+    // Retrieve the values!
+    IMUSensor.readSensor();
+    
     bool isUpsideDown = true; // For testing
     
     // Get current acceleration values:
@@ -253,24 +103,14 @@ struct IMU
     yaw = m_acumYaw;
     roll = m_acumGyroRoll;
 
-#if 0
+#if 1
     Serial.print(pitch);Serial.print("/");
     Serial.print(yaw); Serial.print("/");
     Serial.println(roll);
 #endif
   }
 
-  bmi160_dev Sensor;
-  
 private:
-  int m_calGyroX;
-  int m_calGyroY;
-  int m_calGyroZ;
-  
-  int m_calAccX;
-  int m_calAccY;
-  int m_calAccZ;
-
   float m_acumGyroPitch;
   float m_acumYaw;
   float m_acumGyroRoll;
@@ -448,10 +288,8 @@ void setup()
   // Setup the quad (motors)
   quad.Setup();
 
-  // Setup the BMI160
+  // Setup the MPU9250
   imu.Setup();
-  imu.CalibrateGyroscope();
-  imu.CalibrateAccelerometer();
 }
 
 // Timing.
@@ -481,11 +319,18 @@ void loop()
   
   // Throttle from receiver, we clamp it to 960 to give the PID some headroom:
   float rxThrottle = constrain((float)receiver.Duration[RC_CH3] - 1000.0f, 0.0f, 960.0f);
-  
+
+#if 0
+  Serial.print("Throttle:");Serial.print(rxThrottle);
+  Serial.print(" Pitch:");Serial.print(rxPitch);
+  Serial.print(" Yaw:");Serial.print(rxYaw);
+  Serial.print(" Roll:");Serial.println(rxRoll);
+#endif
+
   float throttleESC1 = rxThrottle;
   float throttleESC2 = rxThrottle;
   
-#if 1
+#if 0
   if(rxThrottle > 30) // Add some dead band.
   {    
     float targetPitch = 0.0f; // This is the value we want
