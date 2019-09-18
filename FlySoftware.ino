@@ -43,9 +43,11 @@ struct IMU
     y = IMUSensor.getGyroY_rads() * RAD_TO_DEG;
     z = IMUSensor.getGyroZ_rads() * RAD_TO_DEG;
   }
-  
+
   void GetCurrentOrientation(float deltaSeconds, float& pitch, float& yaw, float& roll)
   {
+    static bool firstIteration = true;
+    
     // Retrieve the values!
     IMUSensor.readSensor();
     
@@ -54,12 +56,14 @@ struct IMU
     GetAcceleration(ax,ay,az);
 
     // Initial noisy pitch and roll computed from acceleration, this is bad, as it suffers from gimbal lock :(
+    // ...it is a right handed coordinate system with the z-axis positive down, common in aircraft dynamics.
     float accMagnitude = sqrt((ax*ax) + (ay*ay) + (az*az));
     float noisyPitch =   (atan2((ax / accMagnitude) , (-az / accMagnitude)) * RAD_TO_DEG);
     float noisyRoll =  (atan2((-ay / accMagnitude) , (-az / accMagnitude)) * RAD_TO_DEG);
-    
-    noisyPitch = constrain(noisyPitch,-80.0f,80.0f);
-    noisyRoll = constrain(noisyRoll,-80.0f,80.0f);
+
+    // Now that I look at this, I guess we could compute Yaw as well... LOL
+    noisyPitch = constrain(noisyPitch, -80.0f, 80.0f);
+    noisyRoll = constrain(noisyRoll, -80.0f, 80.0f);
      
     // Get gyroscope data:
     float wx, wy, wz;
@@ -71,9 +75,19 @@ struct IMU
     }
     
     // Angular rate to orientation:
-    m_acumGyroPitch -= wx * deltaSeconds;
-    m_acumGyroRoll -= wy * deltaSeconds;
-    m_acumYaw -= wz * deltaSeconds;
+    if(firstIteration)
+    {
+       m_acumGyroPitch = noisyPitch;
+       m_acumGyroRoll = noisyRoll;
+       firstIteration = false;
+    }
+    else
+    {
+      m_acumGyroPitch += wy * deltaSeconds;
+      m_acumYaw += wz * deltaSeconds;
+      m_acumGyroRoll += wx * deltaSeconds;
+    }
+    
     
     // Transfer angle as we have yawed.. TO-DO: understand this better
     //m_acumGyroPitch += m_acumGyroRoll * sin((wz * deltaSeconds) * PI / 180.0f);
@@ -88,13 +102,13 @@ struct IMU
     yaw = m_acumYaw;
     roll = m_acumGyroRoll;
 
-#if 0
+#if 1
     Serial.print(pitch);Serial.print("/");
     Serial.print(yaw); Serial.print("/");
     Serial.println(roll);
 #endif
 
-#if 1
+#if 0
     Serial.print(noisyPitch);Serial.print(" / ");
     Serial.print(0.0f); Serial.print(" / ");
     Serial.println(noisyRoll);
