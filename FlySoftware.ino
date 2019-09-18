@@ -49,26 +49,17 @@ struct IMU
     // Retrieve the values!
     IMUSensor.readSensor();
     
-    bool isUpsideDown = true; // For testing
-    
     // Get current acceleration values:
     float ax, ay, az;
     GetAcceleration(ax,ay,az);
 
     // Initial noisy pitch and roll computed from acceleration, this is bad, as it suffers from gimbal lock :(
     float accMagnitude = sqrt((ax*ax) + (ay*ay) + (az*az));
-    // float noisyPitch = -asin(ay / accMagnitude) * RAD_TO_DEG;
-    // float noisyRoll = asin(ax / accMagnitude) * RAD_TO_DEG;
-    if(isUpsideDown)
-    { 
-      az = -az;  // This flips the resutls (useful is testing with the board upside down).
-    } 
-    float noisyPitch = 180.0f - (90.0f + atan2((ay / accMagnitude) , (az / accMagnitude)) * RAD_TO_DEG);
-    noisyPitch -= 90.0f; // Y is pararel to the ground!
-    float noisyRoll = 180.0f - (90.0f + atan2((az / accMagnitude) , (ax / accMagnitude)) * RAD_TO_DEG);
+    float noisyPitch =   (atan2((ax / accMagnitude) , (-az / accMagnitude)) * RAD_TO_DEG);
+    float noisyRoll =  (atan2((-ay / accMagnitude) , (-az / accMagnitude)) * RAD_TO_DEG);
     
-    noisyPitch = constrain(noisyPitch,-89.0f,89.0f);
-    noisyRoll = constrain(noisyRoll,-89.0f,89.0f);
+    noisyPitch = constrain(noisyPitch,-80.0f,80.0f);
+    noisyRoll = constrain(noisyRoll,-80.0f,80.0f);
      
     // Get gyroscope data:
     float wx, wy, wz;
@@ -79,12 +70,6 @@ struct IMU
       wz = 0.0f;
     }
     
-    if(isUpsideDown)
-    { 
-      wx = -wx;  // This flips the resutls (useful is testing with the board upside down).
-      wy = -wy;
-    }
-     
     // Angular rate to orientation:
     m_acumGyroPitch -= wx * deltaSeconds;
     m_acumGyroRoll -= wy * deltaSeconds;
@@ -103,10 +88,16 @@ struct IMU
     yaw = m_acumYaw;
     roll = m_acumGyroRoll;
 
-#if 1
+#if 0
     Serial.print(pitch);Serial.print("/");
     Serial.print(yaw); Serial.print("/");
     Serial.println(roll);
+#endif
+
+#if 1
+    Serial.print(noisyPitch);Serial.print(" / ");
+    Serial.print(0.0f); Serial.print(" / ");
+    Serial.println(noisyRoll);
 #endif
   }
 
