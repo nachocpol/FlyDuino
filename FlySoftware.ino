@@ -3,8 +3,6 @@
 #include <MPU9250.h>
 #include <Wire.h>
 
-extern TwoWire Wire;
-
 // ------------------------------ //
 //            IMU                 //
 // ------------------------------ // 
@@ -44,6 +42,14 @@ struct IMU
     z = IMUSensor.getGyroZ_rads() * RAD_TO_DEG;
   }
 
+  // Returns the magnetic field in micro teslas
+  void GetMagneticField(float& x, float& y, float& z)
+  {
+    x = IMUSensor.getMagX_uT();
+    y = IMUSensor.getMagY_uT();
+    z = IMUSensor.getMagZ_uT();
+  }
+  
   void GetCurrentOrientation(float deltaSeconds, float& pitch, float& yaw, float& roll)
   {
     static bool firstIteration = true;
@@ -69,10 +75,10 @@ struct IMU
     float wx, wy, wz;
     GetAngularRate(wx, wy, wz);
 
-    if(wz < 15.0f && wz > -15.0f) // No magnetometer data, so just ignore small values.. not perfect tho.
-    {
-      wz = 0.0f;
-    }
+    // Get magnetometer data:
+    float mx, my, mz;
+    GetMagneticField(mx, my, mz);
+    float noisyYaw = atan2(my, mx) * RAD_TO_DEG;
     
     // Angular rate to orientation:
     if(firstIteration)
@@ -88,10 +94,9 @@ struct IMU
       m_acumGyroRoll += wx * deltaSeconds;
     }
     
-    
-    // Transfer angle as we have yawed.. TO-DO: understand this better
-    //m_acumGyroPitch += m_acumGyroRoll * sin((wz * deltaSeconds) * PI / 180.0f);
-    //m_acumGyroRoll -= m_acumGyroPitch * sin((wz * deltaSeconds) * PI / 180.0f);
+    // Transfer angle as we have yawed:
+    m_acumGyroPitch -= m_acumGyroRoll * sin((wz * deltaSeconds) * PI / 180.0f);
+    m_acumGyroRoll += m_acumGyroPitch * sin((wz * deltaSeconds) * PI / 180.0f);
 
     // Compute the final orientation values (combine gyro and acc data):
     m_acumGyroPitch = m_acumGyroPitch * 0.996f + noisyPitch * 0.004f;
@@ -102,7 +107,7 @@ struct IMU
     yaw = m_acumYaw;
     roll = m_acumGyroRoll;
 
-#if 1
+#if 0
     Serial.print(pitch);Serial.print("/");
     Serial.print(yaw); Serial.print("/");
     Serial.println(roll);
@@ -110,7 +115,7 @@ struct IMU
 
 #if 0
     Serial.print(noisyPitch);Serial.print(" / ");
-    Serial.print(0.0f); Serial.print(" / ");
+    Serial.print(noisyYaw); Serial.print(" / ");
     Serial.println(noisyRoll);
 #endif
   }
@@ -209,9 +214,9 @@ struct PIDController
 struct Quad
 {
   Quad():
-    PitchPID(0.45f, 0.065f, 0.095f),
-    YawPID(0.45f, 0.065f, 0.095f),    // Yaw should use other gains (no D at all!)
-    RollPID(0.45f, 0.065f, 0.095f)
+    PitchPID(0.45f, 0.065f, 0.075f), // 0.45f 0.065f 0.095f
+    YawPID(0.45f, 0.065f, 0.0f),
+    RollPID(0.45f, 0.065f, 0.075f)
   {
     Pitch = 0.0f;
     Yaw = 0.0f;
@@ -224,6 +229,8 @@ struct Quad
     ESC2.attach(9,1000,2000);
     ESC3.attach(10,1000,2000);
     ESC4.attach(11,1000,2000);    
+
+    SetThrottle(0.0f,0.0f,0.0f,0.0f);
   }
 
   // Input values in the 0-1000 range:
@@ -282,7 +289,6 @@ void setup()
 {
   // Generic setup
   Serial.begin(9600);
-  //while (!Serial) {}
   
   Wire.begin();
   Wire.setClock(400000); // 400 khz test this!
@@ -300,9 +306,7 @@ void setup()
 // Timing.
 float acumTimeSeconds = 0.0f;
 unsigned long lastMicro = 0;
-
-float pitchIntegral = 0.0f;
-float previousError = 0.0f;
+float targetYaw = 0.0f;
 
 void loop()
 {
@@ -324,7 +328,7 @@ void loop()
   
   // Throttle from receiver, we clamp it to 960 to give the PID some headroom:
   float rxThrottle = constrain((float)receiver.Duration[RC_CH3] - 1000.0f, 0.0f, 960.0f);
-
+  
 #if 0
   Serial.print("Throttle:");Serial.print(rxThrottle);
   Serial.print(" Pitch:");Serial.print(rxPitch);
@@ -334,40 +338,44 @@ void loop()
 
   float throttleESC1 = rxThrottle;
   float throttleESC2 = rxThrottle;
+  float throttleESC3 = rxThrottle;
+  float throttleESC4 = rxThrottle;
   
-#if 0
   if(rxThrottle > 30) // Add some dead band.
   {    
-    float targetPitch = 0.0f; // This is the value we want
-    float pitchError = quad.Pitch - targetPitch; // Current error.
-
+    float targetPitch = 20.0f * -rxPitch; 
+    float pitchError = quad.Pitch - targetPitch; 
     float pidPitch = quad.PitchPID.Update(pitchError, deltaSeconds);
+
+    if(!(rxYaw > -0.15f && rxYaw < 0.15f)) // Some dead band so we dont yaw all the time.
+    {
+      targetYaw += rxYaw * (25.0f * deltaSeconds); // º/second
+    }
+    float yawError = quad.Yaw - targetYaw;
+    float pidYaw = quad.YawPID.Update(yawError, deltaSeconds);
+
+    float targetRoll = 20.0f * rxRoll;
+    float rollError = quad.Roll - targetRoll;
+    float pidRoll = quad.RollPID.Update(rollError, deltaSeconds);
     
-    throttleESC2 += pidPitch; // D9
-    throttleESC1 -= pidPitch; // D6    
+    throttleESC1 += -pidPitch - pidRoll - pidYaw;
+    throttleESC2 += -pidPitch + pidRoll + pidYaw;   
+    throttleESC3 += pidPitch + pidRoll - pidYaw;    
+    throttleESC4 += pidPitch - pidRoll + pidYaw;    
 
 #if 0
-  Serial.print(" ");
-  Serial.print(P * 1000.0f,5);
-  Serial.print(" ");
-  Serial.print(I * 1000.0f,5);
-  Serial.print(" ");
-  Serial.print(D * 1000.0f,5);
-  Serial.print(" ");
-  Serial.println((P + I + D) * 1000,5);
+  Serial.print(throttleESC1); Serial.print(", "); Serial.print(throttleESC2); Serial.print(", "); Serial.print(throttleESC3); Serial.print(", "); Serial.println(throttleESC4);
+  //Serial.print(targetPitch); Serial.print(", "); Serial.print(targetYaw);Serial.print(", "); Serial.println(targetRoll);
 #endif
-
   }
   else
   {
-    throttleESC2 = 0.0f;
     throttleESC1 = 0.0f;
-    
-    pitchIntegral= 0.0f; // Reset
+    throttleESC2 = 0.0f;
+    throttleESC3 = 0.0f;
+    throttleESC4 = 0.0f;
   }
 
-#endif
-
   // Send the throttle to the ESC.
-  quad.SetThrottle(throttleESC1, throttleESC2, 0.0f, 0.0f);  
+  quad.SetThrottle(throttleESC1, throttleESC2, throttleESC3, throttleESC4);  
 }
