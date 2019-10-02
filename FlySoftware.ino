@@ -210,13 +210,18 @@ struct PIDController
   float mPitchIntegral;
   float mPreviousError;
 };
-    
+
+
+#define P_GAIN 0.0f     // 0.45f
+#define I_GAIN 0.0f    // 0.065f
+#define D_GAIN 0.08f    // 0.075f
+
 struct Quad
 {
   Quad():
-    PitchPID(0.45f, 0.065f, 0.075f), // 0.45f 0.065f 0.095f
+    PitchPID(P_GAIN, I_GAIN, D_GAIN),
     YawPID(0.45f, 0.065f, 0.0f),
-    RollPID(0.45f, 0.065f, 0.075f)
+    RollPID(P_GAIN, I_GAIN, D_GAIN)
   {
     Pitch = 0.0f;
     Yaw = 0.0f;
@@ -353,7 +358,8 @@ void loop()
     }
     float yawError = quad.Yaw - targetYaw;
     float pidYaw = quad.YawPID.Update(yawError, deltaSeconds);
-
+    pidYaw = 0.0f; // Disable it for now
+    
     float targetRoll = 20.0f * rxRoll;
     float rollError = quad.Roll - targetRoll;
     float pidRoll = quad.RollPID.Update(rollError, deltaSeconds);
@@ -370,6 +376,8 @@ void loop()
   }
   else
   {
+    targetYaw = quad.Yaw; // Just reset it... 
+    
     throttleESC1 = 0.0f;
     throttleESC2 = 0.0f;
     throttleESC3 = 0.0f;
