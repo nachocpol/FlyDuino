@@ -1,6 +1,7 @@
 #include <Servo.h>
 #include <MPU9250.h>
 #include <Wire.h>
+#include <SoftwareSerial.h>
 
 #define STD_G   9.80665f  
 #define RC_PIN  2
@@ -9,6 +10,11 @@
 #define RC_CH2  1   // Pitch
 #define RC_CH3  2   // Throttle
 #define RC_CH4  3   // Yaw
+
+#define BT_SERIAL_RX 2
+#define BT_SERIAL_TX 3
+
+SoftwareSerial BTSerial(BT_SERIAL_RX, BT_SERIAL_TX);
 
 // ------------------------------ //
 //            IMU                 //
@@ -313,7 +319,11 @@ void setup()
 {
   // Generic setup
   Serial.begin(9600);
-  
+
+  BTSerial.begin(9600);
+  BTSerial.listen();
+  BTSerial.println("FlyDuino Started!");
+
   Wire.begin();
   Wire.setClock(400000); // 400 khz test this!
   
