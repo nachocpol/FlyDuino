@@ -1,13 +1,18 @@
-#include <EnableInterrupt.h>
 #include <Servo.h>
 #include <MPU9250.h>
 #include <Wire.h>
 
+#define STD_G   9.80665f  
+#define RC_PIN  2
+
+#define RC_CH1  0   // Roll
+#define RC_CH2  1   // Pitch
+#define RC_CH3  2   // Throttle
+#define RC_CH4  3   // Yaw
+
 // ------------------------------ //
 //            IMU                 //
 // ------------------------------ // 
-
-#define STD_G 9.80665f  
 
 MPU9250 IMUSensor(Wire,104);
 
@@ -129,54 +134,82 @@ private:
 // ------------------------------ //
 //        RECEIVER                //
 // ------------------------------ // 
-#define RC_NUM_CH 4
 
-#define RC_CH1  0   // Roll
-#define RC_CH2  1   // Pitch
-#define RC_CH3  2   // Throttle
-#define RC_CH4  3   // Yaw
-
-#define RC_CH1_INPUT  A0
-#define RC_CH2_INPUT  A1
-#define RC_CH3_INPUT  A2
-#define RC_CH4_INPUT  A3
-
-void RCCallback(uint8_t channel, uint8_t input_pin);
-
-void RCCallbackCH1();
-void RCCallbackCH2();
-void RCCallbackCH3();
-void RCCallbackCH4();
+static void RCCallback();
 
 struct Receiver
 {
+  Receiver():
+    mCurChannel(0),
+    mPulseStart(0)
+  {
+    memset(mChannelsInternal, 0, sizeof(mChannelsInternal));
+    memset(mChannels, 0, sizeof(mChannels));
+  }
+
+  void CallbackImpl()
+  { 
+    if(digitalRead(RC_PIN) == HIGH)
+    {
+      mPulseStart = micros();
+    }
+    else
+    {
+      unsigned long elapsed = micros() - mPulseStart;
+      if(elapsed > 7000) // Just finished padding pulse, get ready for channels.
+      {
+        mCurChannel = 0;
+      }
+      else
+      {
+        mChannelsInternal[mCurChannel++] = (float)elapsed / 1000.0f;    
+      }
+    }
+  }
+
   void Setup()
   {
     // Pin modes
-    pinMode(RC_CH1_INPUT, INPUT);
-    pinMode(RC_CH2_INPUT, INPUT);
-    pinMode(RC_CH3_INPUT, INPUT);
-    pinMode(RC_CH4_INPUT, INPUT);
-    
+    pinMode(RC_PIN, INPUT);
+
     // Connect interrupt callback
-    enableInterrupt(RC_CH1_INPUT, RCCallbackCH1, CHANGE);
-    enableInterrupt(RC_CH2_INPUT, RCCallbackCH2, CHANGE);
-    enableInterrupt(RC_CH3_INPUT, RCCallbackCH3, CHANGE);
-    enableInterrupt(RC_CH4_INPUT, RCCallbackCH4, CHANGE);
+    attachInterrupt(
+      digitalPinToInterrupt(RC_PIN), 
+      RCCallback, CHANGE
+    );
   }
 
   // Copies the internal data to the user accesible data.
   void RetrieveValues()
   {
     noInterrupts();
-    memcpy(Duration, DurationInternal, sizeof(DurationInternal));
+    memcpy(mChannels, mChannelsInternal, sizeof(mChannelsInternal));
     interrupts();
   }
+
+  float GetChannel(uint8_t chnum)
+  {
+    if(chnum > 5) 
+    {
+      return 0.0f;
+    }
+    float curMs = (mChannels[chnum] - 0.6f) * 0.625f; // [0,1]
+    curMs = curMs * 2.0f - 1.0f; // [-1,1]
+    return constrain(curMs, -1.0f, 1.0f);
+  }
   
-  uint16_t Duration[RC_NUM_CH];
-  uint32_t Start[RC_NUM_CH];
-  volatile uint16_t DurationInternal[RC_NUM_CH];
+private:
+  uint8_t mCurChannel;              // Channel being processed
+  volatile float mChannelsInternal[6]; // Internal data, pulse in ms for each channel
+  unsigned long mPulseStart;        // Start of current pulse
+  float mChannels[6];               // This is the data that the user reads (-1 to 1)
+
 }receiver;
+
+static void RCCallback()
+{
+  receiver.CallbackImpl();
+}
 
 // ------------------------------ //
 //        QUAD & PID              //
@@ -184,12 +217,17 @@ struct Receiver
 struct PIDController
 {
   PIDController(float pGain, float iGain, float dGain):
-    mPGain(pGain),
-    mIGain(iGain),
-    mDGain(dGain),
     mPitchIntegral(0.0f),
     mPreviousError(0.0f)
   {
+    SetGains(pGain, iGain, dGain);
+  }
+
+  void SetGains(float pGain, float iGain, float dGain)
+  {
+    mPGain = pGain;
+    mIGain = iGain;
+    mDGain = dGain;
   }
   
   float Update(float error, float deltaSeconds)
@@ -271,25 +309,6 @@ struct Quad
 //        CODE IMPL.              //
 // ------------------------------ //
 
-// Callback used to retrieve the data from the receiver
-void RCCallback(uint8_t channel, uint8_t input_pin) 
-{
-  if (digitalRead(input_pin) == HIGH) 
-  {
-    receiver.Start[channel] = micros();
-  } 
-  else 
-  {
-    receiver.DurationInternal[channel] = (uint16_t)(micros() - receiver.Start[channel]);
-  }
-}
-
-// Redirects the callback with pin information.
-void RCCallbackCH1() { RCCallback(RC_CH1, RC_CH1_INPUT); }
-void RCCallbackCH2() { RCCallback(RC_CH2, RC_CH2_INPUT); }
-void RCCallbackCH3() { RCCallback(RC_CH3, RC_CH3_INPUT); }
-void RCCallbackCH4() { RCCallback(RC_CH4, RC_CH4_INPUT); }
-
 void setup() 
 {
   // Generic setup
@@ -327,12 +346,11 @@ void loop()
   // Get up to date values from the receiver:
   receiver.RetrieveValues();
 
-  float rxRoll = ((float)receiver.Duration[RC_CH1] - 1500.0f) / 500.0f ; // -1 1 
-  float rxPitch = ((float)receiver.Duration[RC_CH2] - 1500.0f) / 500.0f ; // -1 1
-  float rxYaw = ((float)receiver.Duration[RC_CH4] - 1500.0f) / 500.0f ; // -1 1
-  
+  float rxRoll = receiver.GetChannel(0);
+  float rxPitch = receiver.GetChannel(1);
+  float rxYaw = receiver.GetChannel(3);
   // Throttle from receiver, we clamp it to 960 to give the PID some headroom:
-  float rxThrottle = constrain((float)receiver.Duration[RC_CH3] - 1000.0f, 0.0f, 960.0f);
+  float rxThrottle = (receiver.GetChannel(2) * 0.5f + 0.5f) * 960.0f;
   
 #if 0
   Serial.print("Throttle:");Serial.print(rxThrottle);
