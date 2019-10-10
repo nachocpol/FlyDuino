@@ -14,6 +14,11 @@
 #define BT_SERIAL_RX 2
 #define BT_SERIAL_TX 3
 
+float PGain = 0.0f;    // 0.45f
+float IGain = 0.0f;    // 0.065f
+float DGain = 0.08f;   // 0.075f
+const float kGainCommandBias = 0.02f;
+
 SoftwareSerial BTSerial(BT_SERIAL_RX, BT_SERIAL_TX);
 
 // ------------------------------ //
@@ -255,17 +260,12 @@ struct PIDController
   float mPreviousError;
 };
 
-
-#define P_GAIN 0.0f     // 0.45f
-#define I_GAIN 0.0f    // 0.065f
-#define D_GAIN 0.08f    // 0.075f
-
 struct Quad
 {
   Quad():
-    PitchPID(P_GAIN, I_GAIN, D_GAIN),
+    PitchPID(PGain, IGain, DGain),
     YawPID(0.45f, 0.065f, 0.0f),
-    RollPID(P_GAIN, I_GAIN, D_GAIN)
+    RollPID(PGain, IGain, DGain)
   {
     Pitch = 0.0f;
     Yaw = 0.0f;
@@ -314,6 +314,55 @@ struct Quad
 // ------------------------------ //
 //        CODE IMPL.              //
 // ------------------------------ //
+
+/*
+  We receive packets 2 or 3 bytes long:
+  [type][command][*command][.]
+    P+;
+    I--;
+    D+;
+*/
+void ParseIncomingCommands()
+{
+  unsigned int pendingBytes = BTSerial.available();
+  if(pendingBytes >= 2)
+  {
+    uint8_t type = BTSerial.read();
+    uint8_t command = BTSerial.read();
+    float cmdAmmount = command == 43 ? kGainCommandBias : -kGainCommandBias;
+    if(BTSerial.read() != 59) // If it´s not ; means extra commands
+    {
+      BTSerial.read();
+      cmdAmmount *= 2.0f;
+    }
+
+    // Update gains:
+    if(type == 112)
+    {
+      PGain += cmdAmmount;
+    }
+    else if(type == 105)
+    {
+      IGain += cmdAmmount;
+    }
+    else if(type == 100)
+    {
+      DGain += cmdAmmount;
+    }
+    else
+    {
+      //error!
+    }
+
+    BTSerial.print("New PID gains: P(");
+    BTSerial.print(PGain); BTSerial.print("),(");
+    BTSerial.print(IGain); BTSerial.print("),)");
+    BTSerial.print(DGain); BTSerial.println(")");
+
+    quad.PitchPID.SetGains(PGain, IGain, DGain);
+    quad.RollPID.SetGains(PGain, IGain, DGain);
+  }
+}
 
 void setup() 
 {
